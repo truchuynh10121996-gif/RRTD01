@@ -1,21 +1,14 @@
-# app.py — Streamlit PD + phân tích GEMINI từ 3 sheet CDKT/BCTN/LCTT
+# app.py — Streamlit PD + phân tích GPT từ 3 sheet CDKT/BCTN/LCTT
 
 from datetime import datetime
 import os
 import numpy as np
 import pandas as pd
 import streamlit as st
-
-# Cấu hình matplotlib backend trước khi import pyplot
-import matplotlib
-matplotlib.use('Agg')  # Backend không cần GUI cho Streamlit
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# ===========================
-# THAY ĐỔI: Dùng Gemini thay vì GPT
-# ===========================
-MODEL_NAME = "gemini-2.0-flash-exp"  # Model Gemini mới nhất
+MODEL_NAME = "gpt-4o-mini" 
 
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
@@ -30,44 +23,38 @@ from sklearn.metrics import (
 )
 
 # =========================
-# GEMINI SAFE LOADER (thay OpenAI)
+# OPENAI SAFE LOADER
 # =========================
 try:
-    from google import genai
-    from google.genai.errors import APIError
-    _GEMINI_OK = True
+    from openai import OpenAI  # yêu cầu openai>=1.30
+    _OPENAI_OK = True
 except Exception:
-    genai = None
-    _GEMINI_OK = False
+    OpenAI = None
+    _OPENAI_OK = False
 
-def get_gemini_client():
+def get_openai_client():
     """
-    Ưu tiên: st.secrets["GEMINI_API_KEY"] -> os.getenv -> nhập tạm ở sidebar.
+    Ưu tiên: st.secrets["OPENAI_API_KEY"] -> os.getenv -> nhập tạm ở sidebar (không lưu).
     Trả về (client, err). Nếu client=None => dùng err để hiển thị cảnh báo.
     """
     key = None
     try:
-        key = st.secrets.get("GEMINI_API_KEY", None)
+        key = st.secrets.get("OPENAI_API_KEY", None)
     except Exception:
         pass
     if not key:
-        key = os.getenv("GEMINI_API_KEY")
+        key = os.getenv("OPENAI_API_KEY")
     if not key:
         # cho nhập tạm (không lưu/commit)
-        tmp = st.sidebar.text_input("🔐 Gemini API Key (không lưu)", type="password")
+        tmp = st.sidebar.text_input("🔐 OpenAI API Key (không lưu)", type="password")
         if tmp:
             key = tmp
 
-    if not _GEMINI_OK:
-        return None, "Thiếu thư viện google-genai (cần: pip install google-genai)."
+    if not _OPENAI_OK:
+        return None, "Thiếu thư viện openai (cần openai>=1.30)."
     if not key:
-        return None, "Thiếu GEMINI_API_KEY (đặt trong Secrets/ENV hoặc nhập tạm ở sidebar)."
-    
-    try:
-        client = genai.Client(api_key=key)
-        return client, None
-    except Exception as e:
-        return None, f"Lỗi khởi tạo Gemini client: {e}"
+        return None, "Thiếu OPENAI_API_KEY (đặt trong Secrets/ENV hoặc nhập tạm ở sidebar)."
+    return OpenAI(api_key=key), None
 
 # =========================
 # TÍNH X1..X14 TỪ 3 SHEET (CDKT/BCTN/LCTT)
@@ -214,9 +201,9 @@ np.random.seed(0)
 st.title("DỰ BÁO THAM SỐ PD")
 st.write("## Dự báo xác suất vỡ nợ của khách hàng_PD")
 
-# Hiển thị trạng thái Gemini (thay OpenAI)
-_client_probe, _err_probe = get_gemini_client()
-st.caption("🔎 Trạng thái Gemini AI: " + ("✅ sẵn sàng" if _client_probe else f"⚠️ {_err_probe}"))
+# Hiển thị trạng thái OpenAI
+_client_probe, _err_probe = get_openai_client()
+st.caption("🔎 Trạng thái OpenAI: " + ("✅ sẵn sàng" if _client_probe else f"⚠️ {_err_probe}"))
 
 # Load dữ liệu huấn luyện (CSV có default, X_1..X_14)
 try:
@@ -357,13 +344,11 @@ elif choice == 'Sử dụng mô hình để dự báo':
                 except Exception as e:
                     st.warning(f"Không dự báo được PD: {e}")
 
-        # ===========================
-        # GEMINI phân tích & khuyến nghị (THAY GPT)
-        # ===========================
-        st.markdown("### 🤖 Phân tích Gemini AI & đề xuất CHO VAY/KHÔNG CHO VAY")
-        client, err = get_gemini_client()
+        # GPT phân tích & khuyến nghị
+        st.markdown("### Phân tích GPT & đề xuất CHO VAY/KHÔNG CHO VAY")
+        client, err = get_openai_client()
         if client is None:
-            st.warning(err + " — bỏ qua phân tích Gemini AI.")
+            st.warning(err + " — bỏ qua phân tích GPT.")
         else:
             payload = ratios_df.iloc[0].to_dict()
             # gợi ý rule-of-thumb
@@ -375,66 +360,25 @@ elif choice == 'Sử dụng mô hình để dự báo':
             if flags:
                 payload["ghi_chu"] = " ; ".join(flags)
 
-            # Prompt cho Gemini
-            prompt = f"""
-Bạn là chuyên gia phân tích tín dụng doanh nghiệp tại ngân hàng với 15 năm kinh nghiệm.
+            sys_prompt = (
+                "Bạn là chuyên gia phân tích tín dụng doanh nghiệp tại ngân hàng. "
+                "Phân tích toàn diện dựa trên X1..X14. "
+                "Nêu rõ: (1) Khả năng sinh lời, (2) Thanh khoản, (3) Cơ cấu nợ, (4) Hiệu quả hoạt động. "
+                "Kết thúc bằng khuyến nghị in hoa: CHO VAY hoặc KHÔNG CHO VAY, kèm 2–3 điều kiện nếu CHO VAY."
+            )
+            user_prompt = "Bộ chỉ số:\n" + str(payload) + "\n\nViết súc tích, tiếng Việt, dùng gạch đầu dòng khi hợp lý."
 
-Dựa trên bộ chỉ số tài chính X1-X14 dưới đây, hãy phân tích TOÀN DIỆN và đưa ra khuyến nghị cho vay:
-
-**BỘ CHỈ SỐ TÀI CHÍNH:**
-{str(payload)}
-
-**YÊU CẦU PHÂN TÍCH:**
-1. **Khả năng sinh lời** (X1, X2, X3, X4): Đánh giá biên lợi nhuận và hiệu quả sử dụng vốn
-2. **Thanh khoản** (X7, X8, X11): Đánh giá khả năng đáp ứng nghĩa vụ ngắn hạn
-3. **Cơ cấu nợ** (X5, X6, X9, X10): Đánh giá đòn bẩy tài chính và khả năng trả nợ
-4. **Hiệu quả hoạt động** (X12, X13, X14): Đánh giá quản lý vốn lưu động
-
-**ĐỊNH DẠNG ĐẦU RA:**
-- Viết 4-5 đoạn văn ngắn gọn, sử dụng số liệu cụ thể
-- Chỉ ra điểm MẠNH và điểm YẾU rõ ràng
-- Đánh giá mức độ rủi ro: **THẤP / TRUNG BÌNH / CAO**
-- KẾT LUẬN cuối cùng phải in hoa: **CHO VAY** hoặc **KHÔNG CHO VAY**
-- Nếu CHO VAY: Đưa ra 2-3 điều kiện/giám sát cụ thể
-
-Hãy phân tích khách quan, chuyên nghiệp, hướng đến quyết định cho vay an toàn.
-"""
-
-            with st.spinner("⏳ Gemini AI đang phân tích hồ sơ tín dụng..."):
+            with st.spinner("GPT đang phân tích..."):
                 try:
-                    response = client.models.generate_content(
+                    resp = client.chat.completions.create(
                         model=MODEL_NAME,
-                        contents=prompt,
-                        config={
-                            'temperature': 0.3,  # Giảm độ sáng tạo để tăng tính chính xác
-                            'max_output_tokens': 2048,
-                        }
+                        messages=[
+                            {"role": "system", "content": sys_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
                     )
-                    st.markdown("---")
-                    st.markdown("### 📊 Kết quả Phân tích từ Gemini AI")
-                    st.markdown(response.text)
-                except APIError as e:
-                    st.error(f"❌ Lỗi gọi Gemini API: {e}")
+                    st.write(resp.choices[0].message.content)
                 except Exception as e:
-                    st.error(f"❌ Lỗi không xác định: {e}")
+                    st.error(f"Lỗi gọi GPT: {e}")
     else:
-        st.info("📁 Hãy tải **ho_so_dn.xlsx** (đủ 3 sheet: CDKT, BCTN, LCTT) để tính X1…X14 và nhận phân tích Gemini AI.")
-        
-        with st.expander("📖 Hướng dẫn sử dụng"):
-            st.markdown("""
-            **Cấu trúc file Excel yêu cầu:**
-            
-            1. **Sheet CDKT** (Cân đối kế toán):
-               - Các chỉ tiêu: Tổng tài sản, Vốn chủ sở hữu, Nợ phải trả, Tài sản ngắn hạn, Nợ ngắn hạn, v.v.
-            
-            2. **Sheet BCTN** (Báo cáo thu nhập):
-               - Các chỉ tiêu: Doanh thu thuần, Giá vốn, Lợi nhuận gộp, Chi phí lãi vay, v.v.
-            
-            3. **Sheet LCTT** (Lưu chuyển tiền tệ):
-               - Các chỉ tiêu: Khấu hao TSCĐ
-            
-            **Cấu hình Gemini API:**
-            - Lấy API key tại: https://aistudio.google.com/apikey
-            - Thêm vào Streamlit Secrets với key: `GEMINI_API_KEY`
-            - Hoặc nhập tạm ở sidebar (không lưu vĩnh viễn)
-            """)
+        st.info("Hãy tải **ho_so_dn.xlsx** (đủ 3 sheet) để tính X1…X14 và nhận phân tích GPT.")
