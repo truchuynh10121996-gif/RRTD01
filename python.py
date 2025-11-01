@@ -5,6 +5,10 @@ import os
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+# Cấu hình matplotlib backend trước khi import pyplot
+import matplotlib
+matplotlib.use('Agg')  # Backend không cần GUI cho Streamlit
 import matplotlib.pyplot as plt
 import seaborn as sns
 
